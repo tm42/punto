@@ -175,6 +175,25 @@ $ '
 # Each of these wraps the widgets installed before it. fzf-tab needs compinit
 # (done in §5) to already have run; syntax highlighting must be dead last or it
 # never sees — and so never colours — what the others installed.
+
+# zsh-histdb: records every command to a SQLite database from preexec/precmd and
+# leaves zsh's own history files alone, so it has no effect on ↑ or ^G either way.
+# Not vendored here — INSTALL.md clones it into $HISTDB. Guarded on both the
+# checkout and sqlite3, so a machine with neither loses only the ranked suggestion
+# and the ^R widget below, and reaches a normal prompt otherwise.
+# sqlite-history.zsh installs no ZLE widget, so it goes ahead of this block; its
+# hook registration needs add-zsh-hook already autoloaded.
+# Overridable, because §2 sources ~/.config/punto/machine.zsh before this and a
+# machine that keeps its clone elsewhere is exactly what that file is for. Upstream
+# uses HISTDB_FILE, HISTDB_HOST and seven more, and no bare HISTDB, so the name is free.
+HISTDB=${HISTDB:-~/.oh-my-zsh/custom/plugins/zsh-histdb}
+# Must precede the source below — upstream PR #31.
+[[ $OSTYPE == darwin* ]] && HISTDB_TABULATE_CMD=(sed -e $'s/\x1f/\t/g')
+if [[ -f $HISTDB/sqlite-history.zsh ]] && (( $+commands[sqlite3] )); then
+  autoload -Uz add-zsh-hook
+  source $HISTDB/sqlite-history.zsh
+fi
+
 if [[ -n $BREW_PREFIX ]]; then
   for _f in fzf-tab/fzf-tab.zsh \
             zsh-autosuggestions/zsh-autosuggestions.zsh \
@@ -184,6 +203,30 @@ if [[ -n $BREW_PREFIX ]]; then
   unset _f
 fi
 ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=245'
+
+# histdb-interactive.zsh installs a ZLE widget of its own, one that manages its own
+# buffer and redisplay, so it sits after this block rather than inside it — neither
+# zsh-autosuggestions nor zsh-syntax-highlighting above gets to wrap it. Guarded on
+# _histdb_query, which is defined only when the source above succeeded.
+if (( $+functions[_histdb_query] )); then
+  # README's second strategy, verbatim: an exact match in this directory first,
+  # falling back to the most frequent command anywhere so it never goes silent.
+  _zsh_autosuggest_strategy_histdb_top() {
+      local query="
+          select commands.argv from history
+          left join commands on history.command_id = commands.rowid
+          left join places on history.place_id = places.rowid
+          where commands.argv LIKE '$(sql_escape $1)%'
+          group by commands.argv, places.dir
+          order by places.dir != '$(sql_escape $PWD)', count(*) desc
+          limit 1
+      "
+      suggestion=$(_histdb_query "$query")
+  }
+  ZSH_AUTOSUGGEST_STRATEGY=(histdb_top)
+  source $HISTDB/histdb-interactive.zsh
+  bindkey '^r' _histdb-isearch
+fi
 
 # ── 8. tmux pane status ──────────────────────────────────────
 # preexec/precmd hooks publishing @ps_state/@ps_cmd/@ps_code/@ps_dur, rendered

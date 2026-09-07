@@ -65,6 +65,8 @@ git clone --depth 1 https://github.com/MichaelAquilina/zsh-you-should-use.git \
     ~/.oh-my-zsh/custom/plugins/you-should-use
 git clone --depth 1 https://github.com/fdellwing/zsh-bat.git \
     ~/.oh-my-zsh/custom/plugins/zsh-bat
+git clone --depth 1 https://github.com/larkery/zsh-histdb.git \
+    ~/.oh-my-zsh/custom/plugins/zsh-histdb
 git clone --depth 1 https://github.com/tmux-plugins/tpm.git ~/.tmux/plugins/tpm
 ```
 
@@ -73,10 +75,14 @@ then looks installed forever after. Verify:
 
 ```sh
 for d in ~/.oh-my-zsh ~/.oh-my-zsh/custom/plugins/you-should-use \
-         ~/.oh-my-zsh/custom/plugins/zsh-bat ~/.tmux/plugins/tpm; do
+         ~/.oh-my-zsh/custom/plugins/zsh-bat ~/.oh-my-zsh/custom/plugins/zsh-histdb \
+         ~/.tmux/plugins/tpm; do
   [ -d "$d/.git" ] && echo "ok   $d" || echo "FAIL $d"
 done
 ```
+
+zsh-histdb also needs `sqlite3` on PATH. macOS already has it at /usr/bin/sqlite3; a
+Linux machine needs it installed separately.
 
 lazy.nvim is deliberately absent — `init.lua` fetches it on first launch.
 

@@ -64,6 +64,7 @@ CLONES = {
     ".oh-my-zsh": HOME / ".oh-my-zsh",
     "you-should-use": HOME / ".oh-my-zsh/custom/plugins/you-should-use",
     "zsh-bat": HOME / ".oh-my-zsh/custom/plugins/zsh-bat",
+    "zsh-histdb": HOME / ".oh-my-zsh/custom/plugins/zsh-histdb",
     "tpm": HOME / ".tmux/plugins/tpm",
 }
 TPM_PLUGINS = ["tmux-sensible", "tmux-yank", "tmux-thumbs", "extrakto"]
