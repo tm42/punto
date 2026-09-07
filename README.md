@@ -214,10 +214,7 @@ in tmux, because tmux's `#{=/-N/…:}` can only blind-cut a tail and that eats t
 whole. Both caps are 37 on purpose: at 37 tmux's backstop never fires, so you never get a
 second `…`.
 
-A command slower than 30s finishing in a **background** pane also raises a status-bar notice.
-Foreground panes stay quiet — you just watched it finish. `TMUX_PS_NOTIFY_SEC=0` disables it.
-
-Both notices — that one and an agent's — are drawn by `status-tick.sh` at the right of the
+An agent's notice is drawn by `status-tick.sh` at the right of the
 status bar, ahead of git and the clock, not by `display-message`, whose timeout tmux cancels on your next keystroke: a
 notice about window 4 used to die because you typed in window 1. This one goes when you
 reach the pane it names, or after 30s. Only the newest is shown.

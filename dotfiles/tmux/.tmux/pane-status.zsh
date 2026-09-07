@@ -1,9 +1,6 @@
 # tmux pane status — publishes @ps_state / @ps_cmd / @ps_code / @ps_dur as tmux pane options.
 # Rendered by window-status-format + pane-border-format in ~/.tmux.conf.
 # Source from ~/.zshrc. Safe to source outside tmux (no-op).
-#
-#   TMUX_PS_NOTIFY_SEC   commands at least this slow that finish in a background
-#                        pane raise a status-line nudge. 0 disables. (default 30)
 
 [[ -n $TMUX ]] || return 0
 
@@ -53,9 +50,7 @@ _ps_precmd() {
   # run in the pane you never left sat in the tab as "✔ ls" until you switched away
   # and came back. Same foreground test as agent-notify.sh and status-tick.sh,
   # session_attached and all: the current pane of a session nobody is attached to
-  # is being read by nobody. The nudge below is the one test in the package that
-  # omits it, so in an unattached session a slow command keeps its badge and
-  # raises no nudge. `if -F` rather than a second `tmux display` keeps this to one tmux
+  # is being read by nobody. `if -F` rather than a second `tmux display` keeps this to one tmux
   # call; -t is required, or the format expands against the calling client's pane
   # instead of this one. @ps_code and @ps_dur are set either way, because
   # pane-border-format reads those and not @ps_state — the border still says
@@ -65,25 +60,6 @@ _ps_precmd() {
        if -F -t "$TMUX_PANE" '#{&&:#{session_attached},#{&&:#{pane_active},#{window_active}}}' \
           "set -pu -t $TMUX_PANE @ps_state" \
           "set -p -t $TMUX_PANE @ps_state $state" \; \
-       refresh-client -S 2>/dev/null
-
-  local -i thresh=${TMUX_PS_NOTIFY_SEC:-30}
-  (( thresh > 0 && elapsed >= thresh )) || return 0
-
-  # Only nudge for panes you aren't looking at — otherwise you just watched it finish.
-  local info
-  info=$(tmux display -p -t "$TMUX_PANE" \
-        '#{&&:#{pane_active},#{window_active}}|#I.#P' 2>/dev/null) || return 0
-  [[ ${info%%|*} == 1 ]] && return 0
-
-  # '#' is the format introducer; a command containing one would corrupt the message
-  local cmd=${${(f)"$(tmux show -pv -t "$TMUX_PANE" @ps_cmd 2>/dev/null)"}//\#/\#\#}
-  local glyph='✔'
-  (( code )) && glyph="✘$code"
-  # Not display-message; see the header of status-tick.sh.
-  tmux set -g @notice " $glyph  w${info#*|}  ${cmd:0:48}  $dur " \; \
-       set -g @notice_pane "$TMUX_PANE" \; \
-       set -g @notice_at "$EPOCHSECONDS" \; \
        refresh-client -S 2>/dev/null
 }
 

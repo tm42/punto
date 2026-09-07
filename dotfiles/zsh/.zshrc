@@ -106,7 +106,11 @@ ZSH_THEME="agnoster"
 # zsh-autosuggestions and zsh-syntax-highlighting are deliberately absent here.
 # They wrap ZLE widgets and must load after fzf-tab in a fixed order — see §7.
 # Listing them here loaded them a second (and third) time, out of order.
-plugins=(git you-should-use zsh-bat)
+#
+# per-directory-history: lib/history.zsh below sets share_history, and the
+# plugin tests that option itself and appends to both files immediately when
+# it is on, so the two agree about when a line reaches disk.
+plugins=(git you-should-use zsh-bat per-directory-history)
 [[ -f $ZSH/oh-my-zsh.sh ]] && source $ZSH/oh-my-zsh.sh
 
 # Two changes to the agnoster theme, which lives in the vendored ~/.oh-my-zsh

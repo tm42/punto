@@ -43,7 +43,16 @@ FREEZE=30   # seconds of an unchanging screen before "Working" is retired
 typeset -a pending
 single=''
 while IFS='|' read -r id nat ntxt nname nglyph; do
-  [[ -n $nat ]] || continue
+  # @notice_txt with no @notice_at renders nowhere and ages out of nothing: the pane
+  # never joins $pending, so neither clear below reaches it and the fragment stays set
+  # for the life of the pane. Nothing is known to produce that state — the notifier sets
+  # all four options in one chain — so this is a floor under the option rather than a fix
+  # for a caller. No refresh-client, because nothing was on screen to redraw.
+  if [[ -z $nat ]]; then
+    [[ -n $ntxt || -n $nname || -n $nglyph ]] &&
+      tmux set -pu -t "$id" @notice_txt \; set -pu -t "$id" @notice_name \; set -pu -t "$id" @notice_glyph
+    continue
+  fi
   # The notifier's own foreground test: current pane, current window, and a
   # client attached to that session.
   seen=$(tmux display -p -t "$id" \

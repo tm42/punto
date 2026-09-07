@@ -571,10 +571,10 @@ def diagnose(pane: dict, now: int, hold: int, freeze: int) -> list:
 
     if pane["@notice_txt"] and not nat:
         out.append(
-            "@notice_txt is set with @notice_at empty. status-tick.sh skips such a pane outright "
-            "(`[[ -n $nat ]] || continue`), so this notice is invisible to the sweep in both "
-            "directions: never rendered, never cleared. The `\\;` chain in agent-notify.sh died "
-            "between the two set calls — txt is set first and at is set last.")
+            "@notice_txt is set with @notice_at empty. The `\\;` chain in agent-notify.sh died "
+            "between the two set calls — txt is set first and at is set last. status-tick.sh "
+            "now clears this pair within one tick rather than skipping it, so this is a snapshot "
+            "that may already have missed it by the time you read it.")
     elif nat.isdigit():
         age = now - int(nat)
         if age >= hold:
