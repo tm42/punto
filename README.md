@@ -214,10 +214,11 @@ in tmux, because tmux's `#{=/-N/…:}` can only blind-cut a tail and that eats t
 whole. Both caps are 37 on purpose: at 37 tmux's backstop never fires, so you never get a
 second `…`.
 
-An agent's notice is drawn by `status-tick.sh` at the right of the
-status bar, ahead of git and the clock, not by `display-message`, whose timeout tmux cancels on your next keystroke: a
-notice about window 4 used to die because you typed in window 1. This one goes when you
-reach the pane it names, or after 30s. Only the newest is shown.
+An agent's notice is drawn by `status-tick.sh` at the right of the status bar, ahead of git
+and the clock, not by `display-message`, whose timeout tmux cancels on your next keystroke:
+a notice about window 4 used to die because you typed in window 1. This one goes when you
+reach the pane it names, or after 30s. Notices are pane-scoped, so several can be pending at
+once; past one they collapse to a count and the list of names.
 
 The same script is what makes `Working` honest. State is latched by hooks, and Claude fires
 none when a turn is interrupted with Esc or killed, so the latch outlives the turn. A

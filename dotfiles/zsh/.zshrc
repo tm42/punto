@@ -181,8 +181,7 @@ $ '
 # Not vendored here — INSTALL.md clones it into $HISTDB. Guarded on both the
 # checkout and sqlite3, so a machine with neither loses only the ranked suggestion
 # and the ^R widget below, and reaches a normal prompt otherwise.
-# sqlite-history.zsh installs no ZLE widget, so it goes ahead of this block; its
-# hook registration needs add-zsh-hook already autoloaded.
+# sqlite-history.zsh installs no ZLE widget, so it goes ahead of this block.
 # Overridable, because §2 sources ~/.config/punto/machine.zsh before this and a
 # machine that keeps its clone elsewhere is exactly what that file is for. Upstream
 # uses HISTDB_FILE, HISTDB_HOST and seven more, and no bare HISTDB, so the name is free.
@@ -190,7 +189,6 @@ HISTDB=${HISTDB:-~/.oh-my-zsh/custom/plugins/zsh-histdb}
 # Must precede the source below — upstream PR #31.
 [[ $OSTYPE == darwin* ]] && HISTDB_TABULATE_CMD=(sed -e $'s/\x1f/\t/g')
 if [[ -f $HISTDB/sqlite-history.zsh ]] && (( $+commands[sqlite3] )); then
-  autoload -Uz add-zsh-hook
   source $HISTDB/sqlite-history.zsh
 fi
 

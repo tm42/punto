@@ -14,11 +14,6 @@
 export TMUX_SESSIONIZER_ROOTS="$HOME/code"
 export TMUX_SESSIONIZER_EXTRA="$HOME/.config/nvim:$HOME/.claude:$HOME"
 
-# ── Pane-status notification threshold ───────────────────────
-# Commands at least this slow that finish in a *background* pane raise a
-# status-line nudge. 0 disables. Default 30.
-# export TMUX_PS_NOTIFY_SEC=30
-
 # ── Coding-agent notifications ───────────────────────────────
 # The tmux status strip is always on. A macOS banner on top of it is not — at
 # one per turn it is a lot of banners, and outside tmux it is the only channel

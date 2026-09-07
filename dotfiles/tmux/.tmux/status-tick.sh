@@ -45,14 +45,31 @@ single=''
 while IFS='|' read -r id nat ntxt nname nglyph; do
   # @notice_txt with no @notice_at renders nowhere and ages out of nothing: the pane
   # never joins $pending, so neither clear below reaches it and the fragment stays set
-  # for the life of the pane. Nothing is known to produce that state — the notifier sets
-  # all four options in one chain — so this is a floor under the option rather than a fix
-  # for a caller. No refresh-client, because nothing was on screen to redraw.
+  # for the life of the pane. agent-notify.sh writes the four in one `\;` chain, txt
+  # first and at last, and tmux abandons the rest of a sequence after an error — so a
+  # chain that dies part way is exactly what leaves this pair. No refresh-client,
+  # because nothing was on screen to redraw.
+  #
+  # `show -pv` rather than the $ntxt this loop already read: #{@notice_txt} in a
+  # list-panes format walks pane, window, session, global, so one option set globally
+  # reads as present on every pane — and `set -pu` cannot remove a global, so unsetting
+  # on the strength of that would sweep every pane on the server on every tick, forever.
+  # `show -pv` does not inherit; it exits 1 when only the global is set.
   if [[ -z $nat ]]; then
-    [[ -n $ntxt || -n $nname || -n $nglyph ]] &&
+    if [[ -n $ntxt || -n $nname || -n $nglyph ]] &&
+       tmux show -pv -t "$id" @notice_txt >/dev/null 2>&1; then
       tmux set -pu -t "$id" @notice_txt \; set -pu -t "$id" @notice_name \; set -pu -t "$id" @notice_glyph
+    fi
     continue
   fi
+  # $nat is non-empty, and #{@notice_at} inherits exactly as #{@notice_txt} does: a value
+  # set globally reads as present on every pane. Every one of them would then join
+  # $pending, and the bar would report a count of agents that do not exist — measured on a
+  # six-pane scratch server with a global @notice_at and nothing else: " ✳  5 agents ".
+  # The clear below cannot end it either, since `set -pu` does not remove a global. Same
+  # pane-scope read as above, and it costs a call only on panes that look like they carry
+  # a notice, which on a healthy server is none or one.
+  tmux show -pv -t "$id" @notice_at >/dev/null 2>&1 || continue
   # The notifier's own foreground test: current pane, current window, and a
   # client attached to that session.
   seen=$(tmux display -p -t "$id" \

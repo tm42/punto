@@ -176,7 +176,9 @@ def restore_options(before: dict, skip: str) -> int:
     collateral leaves the reading intact and the evidence where it was.
 
     An option that was empty is unset rather than set to "", because tmux tells
-    the two apart and status-tick.sh's own `[[ -n $nat ]]` test does too."""
+    the two apart: `show -pv` prints the empty value for one and exits 1 for the
+    other. A `#{@opt}` format cannot, which is why the distinction has to be made
+    here rather than left to whatever reads the option next."""
     after = snapshot_options()
     restored = 0
     for pane_id, old_vals in before.items():
