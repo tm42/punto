@@ -106,11 +106,7 @@ ZSH_THEME="agnoster"
 # zsh-autosuggestions and zsh-syntax-highlighting are deliberately absent here.
 # They wrap ZLE widgets and must load after fzf-tab in a fixed order — see §7.
 # Listing them here loaded them a second (and third) time, out of order.
-#
-# per-directory-history: lib/history.zsh below sets share_history, and the
-# plugin tests that option itself and appends to both files immediately when
-# it is on, so the two agree about when a line reaches disk.
-plugins=(git you-should-use zsh-bat per-directory-history)
+plugins=(git you-should-use zsh-bat)
 [[ -f $ZSH/oh-my-zsh.sh ]] && source $ZSH/oh-my-zsh.sh
 
 # Two changes to the agnoster theme, which lives in the vendored ~/.oh-my-zsh
@@ -176,8 +172,8 @@ $ '
 # (done in §5) to already have run; syntax highlighting must be dead last or it
 # never sees — and so never colours — what the others installed.
 
-# zsh-histdb: records every command to a SQLite database from preexec/precmd and
-# leaves zsh's own history files alone, so it has no effect on ↑ or ^G either way.
+# zsh-histdb: records commands to a SQLite database from zshaddhistory/precmd and
+# leaves zsh's own history file alone, so it has no effect on ↑ either way.
 # Not vendored here — INSTALL.md clones it into $HISTDB. Guarded on both the
 # checkout and sqlite3, so a machine with neither loses only the ranked suggestion
 # and the ^R widget below, and reaches a normal prompt otherwise.
@@ -207,19 +203,34 @@ ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=245'
 # zsh-autosuggestions nor zsh-syntax-highlighting above gets to wrap it. Guarded on
 # _histdb_query, which is defined only when the source above succeeded.
 if (( $+functions[_histdb_query] )); then
-  # README's second strategy, verbatim: an exact match in this directory first,
-  # falling back to the most frequent command anywhere so it never goes silent.
+  # README's second strategy: an exact match in this directory first, falling
+  # back to the most frequent command anywhere so it never goes silent. No
+  # longer upstream's text verbatim, which histdb-suggestions recorded that it
+  # was — the error guard and the wildcard escaping below both depart from it.
   _zsh_autosuggest_strategy_histdb_top() {
+      # % and _ are LIKE metacharacters and sql_escape does not touch them, so
+      # an unescaped prefix like ec% would offer echo dup instead of matching
+      # what was actually typed.
+      local prefix=$(sql_escape $1)
+      prefix=${prefix//'%'/\\%}
+      prefix=${prefix//_/\\_}
       local query="
           select commands.argv from history
           left join commands on history.command_id = commands.rowid
           left join places on history.place_id = places.rowid
-          where commands.argv LIKE '$(sql_escape $1)%'
+          where commands.argv LIKE '${prefix}%' ESCAPE '\'
           group by commands.argv, places.dir
           order by places.dir != '$(sql_escape $PWD)', count(*) desc
           limit 1
       "
-      suggestion=$(_histdb_query "$query")
+      # _histdb_query echoes "error in <the whole query>" on a non-zero sqlite3
+      # exit (sqlite-history.zsh:31) rather than returning a status, and
+      # sqlite3's own stderr reaches the terminal regardless of that return
+      # value — so the redirect below stops a failing query painting its error
+      # onto the prompt line as you type, and the test stops that error text
+      # being offered back as the suggestion itself.
+      suggestion=$(_histdb_query "$query" 2>/dev/null)
+      [[ $suggestion == error\ in* ]] && suggestion=""
   }
   ZSH_AUTOSUGGEST_STRATEGY=(histdb_top)
   source $HISTDB/histdb-interactive.zsh
