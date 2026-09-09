@@ -123,5 +123,118 @@ keymap("n", "<leader>gq", function()
   vim.wo.linebreak = vim.wo.wrap
 end, { desc = "Toggle soft wrap (word-safe)" })
 
+-- Commenting extras
+-- gc and gcc are Neovim's own since 0.10 and need nothing here. These three came
+-- from Comment.nvim, which was removed: it overrode the native pair with its own
+-- mappings and asked treesitter for the commentstring first, and since Neovim 0.11
+-- vim.treesitter.get_parser returns nil instead of throwing when no parser exists.
+-- Its pcall only caught the throw, so gcc crashed in every filetype with no parser
+-- installed — zsh and typescript among them.
+--
+-- gb/gbc are deliberately not rebuilt. 'commentstring' holds the line form only, so
+-- block commenting needs a second source of truth this configuration does not have.
+-- Resolved at the cursor, not off the buffer option, so that a comment written
+-- inside a fenced code block gets that language's marker rather than markdown's.
+-- This mirrors $VIMRUNTIME/lua/vim/_comment.lua's get_commentstring, which is a
+-- local function in a private module and so cannot be called: capture metadata
+-- first, then the deepest injected language containing the cursor, then the
+-- buffer option. Being a copy, it can drift when Neovim changes its own.
+--
+-- get_parser returning nil is the ordinary case in a filetype with no parser and
+-- must fall through rather than error. Not doing that is precisely what broke
+-- Comment.nvim.
+local function commentstring_at_cursor()
+  local buf_cs = vim.bo.commentstring
+  local ok, parser = pcall(vim.treesitter.get_parser, 0, "")
+  if not ok or not parser then
+    return buf_cs
+  end
+
+  local pos = vim.api.nvim_win_get_cursor(0)
+  local row, col = pos[1] - 1, pos[2]
+
+  -- Backwards, to prefer the narrower capture.
+  local caps = vim.treesitter.get_captures_at_pos(0, row, col)
+  for i = #caps, 1, -1 do
+    local id, metadata = caps[i].id, caps[i].metadata
+    local md_cs = metadata["bo.commentstring"]
+      or (metadata[id] and metadata[id]["bo.commentstring"])
+    if md_cs then
+      return md_cs
+    end
+  end
+
+  local range = { row, col, row, col + 1 }
+  local found, level = nil, 0
+  local function traverse(tree, depth)
+    if not tree:contains(range) then
+      return
+    end
+    for _, ft in ipairs(vim.treesitter.language.get_filetypes(tree:lang())) do
+      local cs = vim.filetype.get_option(ft, "commentstring")
+      if cs ~= "" and depth > level then
+        found, level = cs, depth
+      end
+    end
+    for _, child in pairs(tree:children()) do
+      traverse(child, depth + 1)
+    end
+  end
+  pcall(traverse, parser, 1)
+
+  return found or buf_cs
+end
+
+local function comment_halves()
+  local left, right = commentstring_at_cursor():match("^(.*)%%s(.*)$")
+  if not left then
+    return nil
+  end
+  return vim.trim(left), vim.trim(right)
+end
+
+-- Where the commentstring has a right half — html's `<!-- %s -->` is the one in
+-- daily use — the cursor belongs between the two, not at end of line.
+local function enter_comment(head, right, row)
+  if right == "" then
+    vim.api.nvim_win_set_cursor(0, { row, 0 })
+    vim.cmd("startinsert!")
+  else
+    vim.api.nvim_win_set_cursor(0, { row, #head })
+    vim.cmd("startinsert")
+  end
+end
+
+keymap("n", "gcA", function()
+  local left, right = comment_halves()
+  if not left or left == "" then
+    return
+  end
+  local line = vim.api.nvim_get_current_line()
+  local head = line .. (line == "" and "" or " ") .. left .. " "
+  vim.api.nvim_set_current_line(head .. (right == "" and "" or " " .. right))
+  enter_comment(head, right, vim.fn.line("."))
+end, { desc = "Comment at end of line" })
+
+local function open_commented(below)
+  local left, right = comment_halves()
+  if not left or left == "" then
+    return
+  end
+  local row = vim.fn.line(".")
+  local head = vim.api.nvim_get_current_line():match("^%s*") .. left .. " "
+  local at = below and row or row - 1
+  vim.api.nvim_buf_set_lines(0, at, at, false, { head .. (right == "" and "" or " " .. right) })
+  enter_comment(head, right, at + 1)
+end
+
+keymap("n", "gco", function()
+  open_commented(true)
+end, { desc = "Comment line below" })
+
+keymap("n", "gcO", function()
+  open_commented(false)
+end, { desc = "Comment line above" })
+
 -- Note: More keymaps are defined in plugin configs (telescope, lsp, etc.)
 -- Press <Space> and wait to see all available mappings via which-key

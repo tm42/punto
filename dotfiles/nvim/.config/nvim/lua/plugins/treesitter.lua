@@ -20,6 +20,17 @@ return {
       "json", "yaml", "toml", "markdown", "markdown_inline",
     }
 
+    -- nvim resolves ft=zsh to a lang=zsh grammar this list does not install, so a
+    -- .zshrc would get no treesitter highlighting at all. nvim-treesitter does ship
+    -- one — tier 1, maintained — and it was declined rather than missed: under the
+    -- bash grammar a .zshrc parses into a single top-level ERROR node, and 830 of
+    -- the captures still land inside it, so what the zsh grammar would buy is a
+    -- usable tree, and nothing here reads the tree except the highlighter.
+    -- The cost of bash is that zsh-only syntax — ${(f)...} parameter flags,
+    -- anonymous functions, =~ globs — parses under a bash grammar and may highlight
+    -- oddly rather than not at all. That is the trade, not an oversight.
+    vim.treesitter.language.register("bash", "zsh")
+
     -- Install missing parsers on startup, in ONE :TSInstall rather than ten.
     vim.schedule(function()
       local missing = {}

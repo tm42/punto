@@ -39,15 +39,6 @@ return {
     end,
   },
 
-  -- Easy commenting: gcc to comment line, gc in visual mode
-  {
-    "numToStr/Comment.nvim",
-    event = { "BufReadPost", "BufNewFile" },
-    config = function()
-      require("Comment").setup()
-    end,
-  },
-
   -- File icons (used by neo-tree, lualine, telescope)
   {
     "nvim-tree/nvim-web-devicons",
