@@ -150,8 +150,61 @@ def panes_rows(stdout: str, n: int) -> list:
     return rows
 
 
+def owned_options(*pane_ids: str) -> dict:
+    """The user options each pane holds itself, as a set of names per pane.
+
+    A `#{@opt}` format walks pane, window, session, global, so it cannot say
+    whether the value it returned came from this pane. One `set -g` of a
+    notification name is therefore a value on every pane at once rather than a
+    stale value in one place, and every read below has to know the difference.
+
+    `show -p` lists only the pane's own options. One call per pane, not one per
+    option per pane: `show -pv <name>` would be seven calls each here and would
+    replace the single delimiter-safe `list-panes` read as well. Only the name
+    is parsed — the token before the first space — because `show -p` shell-quotes
+    its values and nothing here needs them.
+
+    A pane owning none prints nothing and exits 0. A pane that has gone exits
+    non-zero and gets an empty set, which every caller reads as owning nothing,
+    and that is what a vanished pane should look like."""
+    out = {}
+    for pane_id in pane_ids:
+        r = tmux("show", "-p", "-t", pane_id)
+        names = set()
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                name = line.split(" ", 1)[0]
+                if name:
+                    names.add(name)
+        out[pane_id] = names
+    return out
+
+
+def own(field: str, value: str, owned: set) -> str:
+    """`value` if this pane holds the option itself, "" if it does not.
+
+    Only a `@`-prefixed user option can be inherited from a wider scope, so
+    every other field in these reads is a pane property and passes through. So
+    does an `E:`-prefixed one: @tab, @agent_lbl, @agent_is and @agent_name are
+    set with `set -g` in .tmux.conf by design, because they are format templates
+    meant to expand per pane, and scoping them would empty the tab report.
+
+    "" is what every caller here already treats as no value. snapshot_options
+    needs set-and-empty told apart from never-set and does its own mapping to
+    None for that; nothing else does, because nothing else puts a value back."""
+    if not field.startswith("@"):
+        return value
+    return value if field in owned else ""
+
+
 def snapshot_options() -> dict:
     """Every pane's swept options, keyed by pane id.
+
+    An option the pane does not hold itself is None rather than "", because the
+    two have to be put back differently: "" is set-and-empty and is restored
+    with `set -p`, None was never set and is restored with `set -pu`. A format
+    returns "" for both and the global's value for neither, so the distinction
+    can only be made here.
 
     Empty on any failure, including a record it cannot parse: restore_options
     is called from a `finally`, and a raise there would replace whatever sent
@@ -160,9 +213,13 @@ def snapshot_options() -> dict:
     if r.returncode != 0:
         return {}
     try:
-        return {row[0]: row[1:] for row in panes_rows(r.stdout, len(SWEPT) + 1)}
+        rows = panes_rows(r.stdout, len(SWEPT) + 1)
     except ProbeFailed:
         return {}
+    owned = owned_options(*(row[0] for row in rows))
+    return {row[0]: [val if name in owned[row[0]] else None
+                     for name, val in zip(SWEPT, row[1:])]
+            for row in rows}
 
 
 def restore_options(before: dict, skip: str) -> int:
@@ -175,10 +232,17 @@ def restore_options(before: dict, skip: str) -> int:
     been piling up and are the evidence `watch` exists to collect. Undoing the
     collateral leaves the reading intact and the evidence where it was.
 
-    An option that was empty is unset rather than set to "", because tmux tells
-    the two apart: `show -pv` prints the empty value for one and exits 1 for the
-    other. A `#{@opt}` format cannot, which is why the distinction has to be made
-    here rather than left to whatever reads the option next."""
+    An option that was never set is unset rather than set to "", because tmux
+    tells the two apart: `show -pv` prints the empty value for one and exits 1
+    for the other. A `#{@opt}` format cannot, which is why snapshot_options
+    resolves it with `show -p` and records the never-set case as None.
+
+    Reading through a format alone got both failing cases wrong, and neither
+    looked like a failure. A pane whose own value happened to equal a global of
+    the same name read identically before and after, so `was == now` skipped it
+    and the sweep's clear was never undone. A pane whose own value was the empty
+    string read as "" before and as the global's value after, so the restore
+    fired but `if was:` was false and unset an option that had been set."""
     after = snapshot_options()
     restored = 0
     for pane_id, old_vals in before.items():
@@ -187,10 +251,10 @@ def restore_options(before: dict, skip: str) -> int:
         for name, was, now in zip(SWEPT, old_vals, after[pane_id]):
             if was == now:
                 continue
-            if was:
-                tmux("set", "-p", "-t", pane_id, name, was)
-            else:
+            if was is None:
                 tmux("set", "-pu", "-t", pane_id, name)
+            else:
+                tmux("set", "-p", "-t", pane_id, name, was)
             restored += 1
     return restored
 
@@ -317,9 +381,20 @@ def run_probe(session: str, event: str, message: str, agent: str, expect_state: 
         if r.returncode != 0:
             bad(f"agent-notify.sh exited {r.returncode}: {r.stderr.strip()}")
 
-        r = tmux("display", "-p", "-t", pane_id,
-                  "#{@agent_state}|#{@notice_txt}|#{@notice_name}|#{@notice_glyph}|#{@notice_at}")
-        state, ntxt, nname, nglyph, nat = r.stdout.rstrip("\n").split("|", 4)
+        # Same two reasons as every other read in this file. The separators,
+        # because @notice_txt carries the message the agent wrote and a "|" in
+        # it shifted every field after it one place left. And the scope,
+        # because the fault this block exists to catch — @notice_txt set with
+        # @notice_at empty, from the `\;` chain in agent-notify.sh dying
+        # between them — cannot fire while a global @notice_at makes nat read
+        # non-empty on a pane that has none.
+        fields = ("@agent_state", "@notice_txt", "@notice_name",
+                  "@notice_glyph", "@notice_at")
+        r = tmux("display", "-p", "-t", pane_id, panes_format(*fields))
+        row = panes_rows(r.stdout, len(fields))[0]
+        mine = owned_options(pane_id)[pane_id]
+        state, ntxt, nname, nglyph, nat = [own(f, v, mine)
+                                           for f, v in zip(fields, row)]
         print(f"  @agent_state={state!r}  @notice_txt={ntxt!r}  @notice_name={nname!r}  "
               f"@notice_glyph={nglyph!r}  @notice_at={nat!r}")
         ok(f"@agent_state={state}") if state == expect_state else \
@@ -517,14 +592,21 @@ def read_panes(target=None) -> list:
     a plain shell holding a stale @agent_state. Reading tmux's own expansions
     rather than reimplementing .tmux.conf's conditionals is what stops the
     report disagreeing with the screen; reading all three is what stops it
-    calling a label a tab."""
+    calling a label a tab.
+
+    The raw @-fields are scoped to the pane that holds them, so one global
+    @notice_at does not report a notice on every pane at once. The E: fields
+    are not scoped and must not be: they are the three expansions above."""
     args = ["list-panes", "-F", panes_format(*INSPECT_FIELDS)] + \
            (["-t", target] if target else ["-a"])
     r = tmux(*args)
     if r.returncode != 0:
         raise ProbeFailed(f"{target or 'every pane'}: {r.stderr.strip() or 'tmux list-panes failed'}")
-    return [dict(zip(INSPECT_FIELDS, row))
+    rows = [dict(zip(INSPECT_FIELDS, row))
             for row in panes_rows(r.stdout, len(INSPECT_FIELDS))]
+    owned = owned_options(*(p["pane_id"] for p in rows))
+    return [{f: own(f, v, owned[p["pane_id"]]) for f, v in p.items()}
+            for p in rows]
 
 
 def diagnose(pane: dict, now: int, hold: int, freeze: int) -> list:
@@ -677,12 +759,12 @@ def cmd_watch(args) -> int:
         with log_path.open("a") as f:
             while True:
                 ts = int(time.time())
-                r = tmux("list-panes", "-a", "-F",
-                         panes_format("pane_id", "@agent_state", "@notice_txt",
-                                      "@notice_name", "@notice_glyph", "@notice_at"))
+                sample = ("pane_id", "@agent_state", "@notice_txt",
+                          "@notice_name", "@notice_glyph", "@notice_at")
+                r = tmux("list-panes", "-a", "-F", panes_format(*sample))
                 if r.returncode == 0:
                     try:
-                        rows = panes_rows(r.stdout, 6)
+                        raw = panes_rows(r.stdout, len(sample))
                     except ProbeFailed as e:
                         # A sampler that dies on one bad tick loses the hours of
                         # recording it was left running for.
@@ -690,6 +772,12 @@ def cmd_watch(args) -> int:
                         f.flush()
                         time.sleep(args.interval)
                         continue
+                    # Scoped to the pane that owns each option: a log read by
+                    # someone who does not have the machine in front of them
+                    # would otherwise carry one global as every pane's value.
+                    owned = owned_options(*(row[0] for row in raw))
+                    rows = [[own(fld, v, owned[row[0]])
+                             for fld, v in zip(sample, row)] for row in raw]
                     for pane_id, state, ntxt, nname, nglyph, nat in rows:
                         # Only panes with something set: a full sweep every tick
                         # for every idle pane would drown the one line that matters.
