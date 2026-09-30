@@ -17,10 +17,19 @@
 # /etc/paths.d contributed — a hardcoded assignment silently drops entries like
 # ~/.orbstack/bin.
 #
-# Only Homebrew's own directories are added here. A tool this repo does not
-# install — uv, bun, cargo, anything else — goes on PATH in machine.zsh, guarded
-# by [ -d ], so a machine that lacks it carries no dead entry.
+# Only Homebrew's own directories and ~/.local/bin are added here. A tool this
+# repo does not install — uv, bun, cargo, anything else — goes on PATH in
+# machine.zsh, guarded by [ -d ], so a machine that lacks it carries no dead
+# entry. ~/.local/bin is the one exception to that rule, and it is an exception
+# because this repo does install something there: link.py puts the `punto`
+# command in it.
 typeset -U path PATH
+
+# Guarded, because ~/.local/bin does not exist on a machine nothing has installed
+# into yet. The guard runs once at startup, so the shell that ran the very first
+# ./link.py does not carry the directory — that install needs a new shell before
+# `punto` resolves, which is why INSTALL.md's link step says so.
+[[ -d ~/.local/bin ]] && path=(~/.local/bin $path)
 
 # Homebrew's prefix varies by platform: /opt/homebrew on Apple Silicon,
 # /usr/local on Intel, /home/linuxbrew/.linuxbrew on Linux. `brew --prefix`

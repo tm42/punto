@@ -131,42 +131,38 @@ Read the output before continuing.
 
 ```sh
 cd ~/punto
-bk=~/punto-backup/$(date +%Y%m%dT%H%M%S)
-for pkg in dotfiles/*/; do
-  (cd "$pkg" && find . -type f ! -name '.DS_Store' | sed 's|^\./||') | while read -r rel; do
-    d=$(dirname "$rel")
-    while [ "$d" != "." ]; do
-      [ -L "$HOME/$d" ] && { echo "SKIP  $rel — parent $d is a symlink"; continue 2; }
-      d=$(dirname "$d")
-    done
-    if [ -L "$HOME/$rel" ]; then
-      old=$(readlink "$HOME/$rel")
-      [ "$old" = "$PWD/$pkg$rel" ] || echo "relink $rel (was -> $old)"
-    elif [ -e "$HOME/$rel" ]; then
-      mkdir -p "$bk/$(dirname "$rel")" && mv "$HOME/$rel" "$bk/$rel" && echo "saved  $rel -> $bk/$rel"
-    fi
-    mkdir -p "$(dirname "$HOME/$rel")"
-    ln -sfn "$PWD/$pkg$rel" "$HOME/$rel"
-  done
-done
+./link.py            # --dry-run first, if you want to see the plan
 ```
 
 For every file in every package, make the matching path in `$HOME` a symlink pointing at
 the repo copy. Three things happen before each link, and each one is a way this step used
 to be able to destroy something:
 
-- **A real file is moved to `$bk` first**, so `~/.zshrc` and its aliases end up in
-  `~/punto-backup/<timestamp>/.zshrc` rather than gone. The directory is created only when
-  something is actually saved, and re-running the step makes no empty ones.
-- **A symlinked parent is refused**, because `ln -sfn`'s `-n` guards only a symlink named
-  as the target itself. Without this test, a `~/.config/nvim` pointing at another checkout
-  means the loop replaces a file in *that* repo, outside `$HOME`.
+- **A real file whose content differs is moved aside first**, so `~/.zshrc` and its aliases
+  end up in `~/punto-backup/<timestamp>/.zshrc` rather than gone. The directory is created
+  only when something is actually saved, and re-running the step makes no empty ones. A
+  file identical to the repo copy is replaced with the link and not saved, because there is
+  nothing in it to lose.
+- **A symlinked parent is refused**, because replacing a link named as the target itself is
+  safe and one in a parent is not. Without this test, a `~/.config/nvim` pointing at
+  another checkout means the step replaces a file in *that* repo, outside `$HOME`.
 - **An existing symlink is replaced and its old target printed.** Nothing is saved — the
   link is one line of output and that output is all you get, so read it.
 
-Re-running is safe: an already-correct link prints nothing and is relinked to the same
-path. Only the parent-symlink `SKIP`s need action, and the file they name stays unlinked
-until you clear the parent and run the step again.
+Re-running is safe: an already-correct link is left alone and prints nothing. Only the
+refusals need action, and the file each one names stays unlinked until you clear the parent
+and run the step again.
+
+`./link.py` also names a symlink in one of these directories that points into the repo at a
+path no package owns any more — what a dotfile deleted from a package leaves behind. It
+reports those and never removes them; `./link.py --prune` is what deletes them, and it is
+the only thing here that deletes anything in `$HOME`.
+
+**Open a new shell before using `punto`.** This step is what puts `~/.local/bin/punto` on
+disk, and `.zshrc` §1 decided whether to add `~/.local/bin` to `PATH` when *this* shell
+started — so `punto` does not resolve until the next one. From then on `punto link` works
+from any directory, and it is what to run after a pull that adds a file to a package: a
+pull brings the file into the repo and creates no symlink for it.
 
 Editing `~/.zshrc` now edits the repo file. That is the point: `git diff` shows your
 change immediately and there is no copy-back step to forget.

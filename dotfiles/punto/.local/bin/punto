@@ -1,0 +1,28 @@
+#!/bin/zsh
+# punto <check|link|debug> [args...] — the three programs in this repo, from any
+# directory.
+#
+# ${0:A} is this script's own path with every symlink resolved, which is how the
+# checkout is found: this file is installed as ~/.local/bin/punto pointing back
+# into the repo, so its resolved path is <repo>/dotfiles/punto/.local/bin/punto
+# and five :h modifiers walk back up to <repo>. Not `readlink -f`, which BSD
+# readlink did not carry until macOS 12.3.
+#
+# It holds no logic of its own. ./check.py, ./link.py and ./debug.py keep working
+# from the checkout, which is what a first install has to use — nothing is on
+# PATH until link.py has put it there, and PATH itself is only re-read by a new
+# shell.
+emulate -L zsh
+repo=${0:A:h:h:h:h:h}
+
+case $1 in
+  check) shift; exec "$repo/check.py" "$@" ;;
+  link)  shift; exec "$repo/link.py"  "$@" ;;
+  debug) shift; exec "$repo/debug.py" "$@" ;;
+  *)
+    print -u2 "usage: punto <check|link|debug> [args...]"
+    print -u2 "  check   verify this machine against the repo   (./check.py)"
+    print -u2 "  link    install or repair the symlinks         (./link.py)"
+    print -u2 "  debug   the agent-notification diagnostics     (./debug.py)"
+    exit 2 ;;
+esac
