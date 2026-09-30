@@ -127,6 +127,54 @@ def managed(pkg):
                   and not p.name.endswith(("~", ".swp", ".swo", ".orig", ".rej")))
 
 
+def stale_links() -> list:
+    """Symlinks into this repo, in a directory a package owns, at a path no
+    package owns any more.
+
+    Nothing reported these before, so a dotfile deleted from a package left a
+    dangling link in $HOME for good — managed() and the old loop both iterate
+    over files that are *currently* in the repo, and check_repo does not sweep
+    $HOME from the other direction either.
+
+    The comparison is against the union of every package's managed set, never
+    one package's. $HOME itself is a directory three packages populate — docs
+    (.nvimcheatsheet.md, .tmux-quickstart.md), tmux (.tmux.conf) and zsh
+    (.zshrc) — so a per-package comparison would call ~/.tmux.conf stale while
+    looking at zsh, and --prune would delete it.
+
+    Bounded to the directories those paths live in, so it never walks $HOME as a
+    whole."""
+    owned, dirs = set(), set()
+    for pkg in packages():
+        for rel in managed(pkg):
+            owned.add(rel)
+            dirs.add(rel.parent)
+    stale = []
+    for d in sorted(dirs):
+        try:
+            entries = sorted((HOME / d).iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_symlink():
+                continue
+            try:
+                target = entry.resolve()
+            except OSError:
+                # A dangling link into the repo cannot be resolved, so read the
+                # target as written; a relative one is resolved against its own
+                # directory the way the filesystem would.
+                target = Path(entry.readlink())
+                if not target.is_absolute():
+                    target = (entry.parent / target).resolve(strict=False)
+            if REPO not in target.parents and target != REPO:
+                continue
+            rel = d / entry.name
+            if rel not in owned:
+                stale.append((rel, target))
+    return stale
+
+
 # ── Sections ─────────────────────────────────────────────────
 
 
@@ -172,6 +220,14 @@ def check_links():
             for st, first in sorted(examples.items()):
                 if st != "linked":
                     print(f"      e.g. {first}  — {st}")
+
+    # The other direction, which nothing here looked at before: a link into this
+    # repo at a path the repo no longer has. The loop above walks the files that
+    # are currently in a package, so a dotfile deleted from one left its symlink
+    # in $HOME dangling and unreported for good.
+    for rel, target in stale_links():
+        warn(f"{tilde(HOME / rel)} -> {tilde(target)} — points into this repo at "
+             "a path no package owns; ./link.py --prune deletes it")
 
 
 def check_tools():
