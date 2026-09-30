@@ -130,15 +130,23 @@ if [[ -n $pane ]]; then
   # pane in a session nobody is looking at. Without it, detaching and leaving an
   # agent running made Stop clear the state instead of setting ready — the exact
   # case ready exists for.
+  # @agent_state is deliberately not in this format. #{@agent_state} walks pane,
+  # window, session, global, so a value set globally reads as present on every
+  # pane — and the one test that consults it below would then be true
+  # everywhere. It is read at pane scope instead, inside that test, because that
+  # is the only branch that wants it: a hook event fires from three agents in
+  # every pane, and a second tmux call on all of them to serve one branch is a
+  # cost this path cannot carry.
   info=$(tmux display -p -t "$pane" \
-        '#{&&:#{session_attached},#{&&:#{pane_active},#{window_active}}}|#I.#P|#{@agent_state}|#{pane_title}')
+        '#{&&:#{session_attached},#{&&:#{pane_active},#{window_active}}}|#I.#P|#{pane_title}')
   fg=${info%%|*}
   # A stale pane id is not an error to tmux 3.7c: it exits 0 and expands the
   # format against empty fields, so testing the field beats testing the string.
   [[ $fg == [01] ]] || exit 0
 
   rest=${info#*|}; idx=${rest%%|*}
-  rest=${rest#*|}; cur=${rest%%|*}
+  # The title is last and takes the whole remainder, because a pane title can
+  # itself contain "|" — "Action Required | punto-wk" is one this repo writes.
   title=${rest#*|}
 
   # `ready` means "finished and unread", so a turn that ends while you are
@@ -147,7 +155,16 @@ if [[ -n $pane ]]; then
   # $soft is Notification and nothing else. Claude fires it 60s into an approval
   # that is still pending, so it must not overwrite a `wait` — but Stop must,
   # or granting an approval leaves the pane reading "Action Required" for good.
-  if [[ -n $soft && $cur == wait ]]; then
+  #
+  # `show -pv`, not the format above: it exits 1 rather than inheriting, so a
+  # global @agent_state of `wait` cannot suppress this on a pane that holds no
+  # state of its own. The value is compared and not the exit status, because a
+  # pane owning an explicitly empty @agent_state exits 0 with no output and is
+  # not a pending approval either. Claude is the only agent here whose wiring
+  # declares Notification, so it is the only one that reaches this branch at
+  # all — codex's and opencode's Stop goes straight to the arms below.
+  if [[ -n $soft ]] && \
+     [[ $(tmux show -pv -t "$pane" @agent_state 2>/dev/null) == wait ]]; then
     :
   elif [[ $state == ready && $fg == 1 ]]; then
     tmux set -pu -t "$pane" @agent_state

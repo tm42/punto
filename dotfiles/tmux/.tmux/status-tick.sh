@@ -118,6 +118,20 @@ fi
 tmux list-panes -a -F '#{pane_id} #{@agent_state} #{@agent_screen} #{@agent_screen_at}' 2>/dev/null |
 while read -r id state hash hash_at; do
   [[ $state == working ]] || continue
+  # Same pane-scope read the notice loop above makes, and for a sharper reason:
+  # this loop writes. #{@agent_state} in a list-panes format walks pane, window,
+  # session, global, so one `set -g @agent_state working` reads as `working` on
+  # every pane — and then every pane gets a capture-pane and a cksum, every pane
+  # gets @agent_screen and @agent_screen_at set, and once the screen has been
+  # still for FREEZE the retire branch runs `set -pu @agent_state` plus a
+  # refresh-client on each. `set -pu` cannot remove a global, so the state comes
+  # straight back and the whole cycle repeats for the life of the server.
+  # Measured at 07166bc on a six-pane scratch socket: one tick, six panes that
+  # owned nothing, six panes owning both options afterwards.
+  # After the `working` test rather than before it, so the call costs nothing on
+  # a pane that is not claiming to work — the same bound :72 puts on the notice
+  # path.
+  tmux show -pv -t "$id" @agent_state >/dev/null 2>&1 || continue
   now=$(tmux capture-pane -p -t "$id" 2>/dev/null | cksum | cut -d' ' -f1)
   if [[ $now != $hash ]]; then
     tmux set -p -t "$id" @agent_screen "$now" \; set -p -t "$id" @agent_screen_at "$EPOCHSECONDS"
