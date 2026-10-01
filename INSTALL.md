@@ -92,40 +92,33 @@ This prints what the link step would touch. It changes nothing.
 
 ```sh
 cd ~/punto
-for pkg in dotfiles/*/; do
-  (cd "$pkg" && find . -type f ! -name '.DS_Store' | sed 's|^\./||') | while read -r rel; do
-    dst="$HOME/$rel"
-    # A symlink in a PARENT directory is the dangerous case, and the one the
-    # other three tests cannot see: [ -L ] resolves parent components, so a file
-    # inside a symlinked directory reports as an ordinary FILE.
-    via=""; p=$(dirname "$dst")
-    while [ "$p" != "$HOME" ] && [ "$p" != "/" ]; do
-      [ -L "$p" ] && via="$p -> $(readlink "$p")"
-      p=$(dirname "$p")
-    done
-    if [ -n "$via" ];   then echo "PARENT $rel  (inside $via)"
-    elif [ -L "$dst" ]; then echo "LINK  $rel -> $(readlink "$dst")"
-    elif [ -e "$dst" ]; then echo "FILE  $rel"
-    else                     echo "new   $rel"
-    fi
-  done
-done
+./link.py --dry-run
 ```
 
 Read the output before continuing.
 
-- `new` — nothing there, the link is free.
-- `FILE` — a real file. Step 5 moves it to `~/punto-backup/<timestamp>/` before linking, so
-  your aliases survive; this is your chance to see which files that will be.
-- `LINK` — already a symlink. Check where it points. Step 5 replaces it and prints the old
-  target, but a symlink is not backed up — **if it points into another repo, stop and look
-  at that repo first.**
-- `PARENT` — a directory on the way to this file is a symlink into somewhere else, so a
-  plain `ln` would not write into `$HOME` at all: it would reach through the link and
-  replace a real file in that other checkout. `ln -sfn`'s `-n` does not help here — it
-  guards a symlink named as the target itself, never one in a parent component. Step 5
-  refuses these and names them; move or remove the parent symlink and re-run it to pick
-  the file up.
+One line per file that is not already linked, each ending in the reason. A file that is
+already linked prints nothing, so on a second run an empty list is the whole report.
+
+- `missing` — nothing there, the link is free.
+- `same content` — a real file byte-for-byte identical to the repo copy. Replaced by the
+  link and not saved anywhere, because there is nothing in it to lose.
+- `different content` — a real file that differs. Step 5 moves it to
+  `~/punto-backup/<timestamp>/` before linking, so your aliases survive; this is your chance
+  to see which files that will be.
+- `wrong file in this repo`, `outside this repo`, `broken link` — already a symlink, and each
+  line names where it currently points. A symlink is not backed up, and that printed target
+  is the only record of it — so **if it points into another repo, stop and look at that repo
+  first.**
+- `refused — parent … is a symlink` — a directory on the way to this file is a symlink into
+  somewhere else, so writing the link would reach through it and replace a real file in that
+  other checkout rather than touching `$HOME` at all. Testing the file itself cannot see
+  this, because the test resolves the parent components first. Step 5 refuses these and names
+  both the file and the parent; move or remove the parent symlink and re-run it to pick the
+  file up.
+
+Everything above is the same walk step 5 carries out — `--dry-run` is that step with the
+writes switched off, not a second opinion about it.
 
 ## 5. Link
 

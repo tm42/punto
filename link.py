@@ -105,6 +105,15 @@ def plan() -> tuple[list, list]:
     return actions, refused
 
 
+# The verdicts that mean an existing symlink is about to be replaced. Where it
+# pointed is printed on the plan line for each of these, so --dry-run says it too
+# — it is the only record of the old target, nothing backs a symlink up, and a
+# link into another checkout is the case where the right answer is to stop and
+# read that repository first. INSTALL.md's preflight step sends the reader here
+# for exactly that.
+REPLACES_A_LINK = ("wrong file in this repo", "outside this repo", "broken link")
+
+
 def do_link(pkg: str, rel: Path, verdict: str, stamp: str) -> None:
     src, dst = PKGROOT / pkg / rel, HOME / rel
     if verdict == "different content":
@@ -112,8 +121,6 @@ def do_link(pkg: str, rel: Path, verdict: str, stamp: str) -> None:
         bk.parent.mkdir(parents=True, exist_ok=True)
         dst.rename(bk)
         print(f"  saved   {rel}  ->  {check.tilde(bk)}")
-    elif verdict in ("wrong file in this repo", "outside this repo"):
-        print(f"  relink  {rel}  (was -> {dst.readlink()})")
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.is_symlink() or dst.exists():
         dst.unlink()
@@ -139,7 +146,12 @@ def main() -> int:
     if not actions and not refused:
         check.ok(f"every managed file is linked  ({sum(len(managed(p)) for p in packages())} files)")
     for verdict, pkg, rel in actions:
-        print(f"  {'would link' if dry else 'link  '}  {rel}  ({verdict})")
+        # readlink(), not resolve(): a broken link's target does not exist, and
+        # what the reader needs is the path as written, not a path resolved
+        # against a directory that may also be gone.
+        was = (f"  (was -> {(HOME / rel).readlink()})"
+               if verdict in REPLACES_A_LINK else "")
+        print(f"  {'would link' if dry else 'link  '}  {rel}  ({verdict}){was}")
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     failed = 0
     if not dry:
