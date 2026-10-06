@@ -182,10 +182,11 @@ $ '
 # never sees — and so never colours — what the others installed.
 
 # zsh-histdb: records commands to a SQLite database from zshaddhistory/precmd and
-# leaves zsh's own history file alone, so it has no effect on ↑ either way.
+# leaves zsh's own history file alone, so the two stores are separate records of
+# the same shell and ↑ below reads both.
 # Not vendored here — INSTALL.md clones it into $HISTDB. Guarded on both the
-# checkout and sqlite3, so a machine with neither loses only the ranked suggestion
-# and the ^R widget below, and reaches a normal prompt otherwise.
+# checkout and sqlite3, so a machine with neither loses only the ranked suggestion,
+# the ^R widget below and ↑'s first tier, and reaches a normal prompt otherwise.
 # sqlite-history.zsh installs no ZLE widget, so it goes ahead of this block.
 # Overridable, because §2 sources ~/.config/punto/machine.zsh before this and a
 # machine that keeps its clone elsewhere is exactly what that file is for. Upstream
@@ -195,6 +196,169 @@ HISTDB=${HISTDB:-~/.oh-my-zsh/custom/plugins/zsh-histdb}
 [[ $OSTYPE == darwin* ]] && HISTDB_TABULATE_CMD=(sed -e $'s/\x1f/\t/g')
 if [[ -f $HISTDB/sqlite-history.zsh ]] && (( $+commands[sqlite3] )); then
   source $HISTDB/sqlite-history.zsh
+fi
+
+# punto's ↑ and ↓. They sit here, between sqlite-history.zsh above and the
+# plugins below, because zsh-autosuggestions lists both widget names in its
+# ZSH_AUTOSUGGEST_CLEAR_WIDGETS (zsh-autosuggestions.zsh:61-62) and wraps them
+# at load to clear the grey suggestion when either runs. Defining them after
+# that source would clobber the wrapper and the suggestion would linger over a
+# recalled command. That is the mirror of histdb-interactive.zsh at the end of
+# §7, sourced after the plugins precisely so nothing wraps a widget that
+# manages its own buffer.
+#
+# The names are oh-my-zsh's, reused rather than renamed, so the twelve bindkey
+# lines it already ran (lib/key-bindings.zsh:38-40 and :42-44 for ↑, :51-53 and
+# :55-57 for ↓ — emacs, viins and vicmd for the literal escape and again for
+# the terminfo one) keep pointing here, and ↑ and ↓ cannot disagree about
+# position depending on which escape the terminal sent. Guarded on
+# _histdb_query like the block below, so without the clone or sqlite3 these
+# stay oh-my-zsh's autoloaded functions, unmodified.
+if (( $+functions[_histdb_query] )); then
+  typeset -ga _punto_hist_list
+  typeset -g  _punto_hist_prefix
+  typeset -gi _punto_hist_index
+
+  # Tier one: the distinct commands run in $PWD matching the prefix, newest
+  # first. `group by commands.argv` and not (argv, dir) — the suggestion
+  # strategy below groups by both because it wants one row per directory, and
+  # here that would list one command once per directory it was ever run in.
+  # Multi-line commands are left out, because _histdb_query returns rows
+  # separated by newlines and one would arrive as fragments; $history still
+  # reaches such a command in tier two, intact.
+  _punto_histdb_local() {
+    # % and _ are LIKE metacharacters and sql_escape does not touch them, so an
+    # unescaped prefix like ec% would match more than what was typed.
+    local prefix=$(sql_escape $1)
+    prefix=${prefix//'%'/\\%}
+    prefix=${prefix//_/\\_}
+    local query="
+        select commands.argv from history
+        left join commands on history.command_id = commands.rowid
+        left join places on history.place_id = places.rowid
+        where commands.argv LIKE '${prefix}%' ESCAPE '\'
+          and places.dir = '$(sql_escape $PWD)'
+          and instr(commands.argv, char(10)) = 0
+        group by commands.argv
+        order by max(history.start_time) desc
+    "
+    # Same two guards as the suggestion strategy below: _histdb_query echoes
+    # "error in <the whole query>" on a non-zero sqlite3 exit
+    # (sqlite-history.zsh:31) rather than returning a status, and sqlite3's own
+    # stderr reaches the terminal regardless of that return value.
+    local out=$(_histdb_query "$query" 2>/dev/null)
+    [[ $out == error\ in* ]] && return 1
+    print -r -- $out
+  }
+
+  # One list per sequence: tier one, then everything else matching from zsh's
+  # own history by recency, with no entry repeated. Measured 2026-10-02 over
+  # 2991 entries, the filter and dedupe cost 0.49 ms for a three-character
+  # prefix, 1.41 ms for a single letter and 2.14 ms for an empty prefix —
+  # monotone in the match count, so the empty prefix is the ceiling, and it is
+  # paid once per sequence rather than on every press.
+  _punto_hist_build() {
+    local prefix=$1
+    local -a local_hits global_hits rest
+    # A database that exists but cannot be read is indistinguishable from no
+    # local history here: tier one comes back empty and the walk degrades to
+    # tier two alone, which is what ↑ did before this block existed.
+    local out=$(_punto_histdb_local "$prefix")
+    [[ -n $out ]] && local_hits=( ${(f)out} )
+    # No (Oa): $history already expands newest-first, and reversing it would
+    # make ↑ walk forward in time.
+    #
+    # And no (b) either. glob_subst is off, so the characters $prefix
+    # contributes are never pattern metacharacters — only the * written here is
+    # — which is exactly the literal match the .history-beginning-search-backward
+    # this replaces performs. (b) would backslash-escape them, and since the
+    # result is not pattern-expanded those backslashes become characters no
+    # history entry contains: measured in zsh -f against
+    # (git*log, git branch, gitxlog extra, git[a]b, gitzab x), the prefix git*
+    # matches git*log and nothing else without (b), and matches nothing at all
+    # with it — so (b) would silently break ↑ for any prefix holding *, [ or ?.
+    global_hits=( ${(u)${(M)${history[@]}:#$prefix*}} )
+    rest=( ${global_hits:|local_hits} )
+    _punto_hist_list=( "${local_hits[@]}" "${rest[@]}" )
+    _punto_hist_prefix=$prefix
+    _punto_hist_index=0
+  }
+
+  # Index into that list, rebuilding when this press starts a new sequence or
+  # the typed prefix has changed. Returns non-zero exactly where upstream's
+  # .history-beginning-search-* would have failed, so the two widgets below
+  # fall through as they did.
+  _punto_hist_step() {
+    local -i delta=$1 resume=$2
+    local prefix=$LBUFFER
+    if (( ! resume )) || [[ $_punto_hist_prefix != "$prefix" ]] ||
+       (( ! $#_punto_hist_list )); then
+      _punto_hist_build "$prefix"
+    fi
+    local -i next=$(( _punto_hist_index + delta ))
+    (( next >= 1 && next <= $#_punto_hist_list )) || return 1
+    _punto_hist_index=$next
+    BUFFER=${_punto_hist_list[next]}
+  }
+
+  # oh-my-zsh's up-line-or-beginning-search with only
+  # .history-beginning-search-backward replaced. All three branches stay: a
+  # $LBUFFER holding a newline moves within the buffer, so with the cursor on
+  # the first line of a multi-line buffer ↑ searches history instead; a
+  # PREBUFFER with the edit-buffer zstyle pushes the line; only the third
+  # branch searches. The $CURSOR restore is what makes $LBUFFER the typed
+  # prefix again on a repeated press, which is how the step below knows the
+  # sequence continues.
+  up-line-or-beginning-search() {
+    emulate -L zsh
+    typeset -g __searching __savecursor
+    local -i resume=0
+
+    if [[ $LBUFFER == *$'\n'* ]]; then
+      zle .up-line-or-history
+      __searching=''
+    elif [[ -n $PREBUFFER ]] &&
+        zstyle -t ':zle:up-line-or-beginning-search' edit-buffer
+    then
+      zle .push-line-or-edit
+    else
+      [[ $LASTWIDGET = $__searching ]] && { CURSOR=$__savecursor; resume=1 }
+      __savecursor=$CURSOR
+      __searching=$WIDGET
+      _punto_hist_step 1 $resume
+      zstyle -T ':zle:up-line-or-beginning-search' leave-cursor &&
+          zle .end-of-line
+    fi
+  }
+  zle -N up-line-or-beginning-search
+
+  # oh-my-zsh's down-line-or-beginning-search with only
+  # .history-beginning-search-forward replaced. The $NUMERIC and $RBUFFER tests
+  # and the fall-through to .down-line-or-history stay, so ↓ leaves the walk
+  # the same way it did when the search ran off the newest end.
+  down-line-or-beginning-search() {
+    emulate -L zsh
+    typeset -g __searching __savecursor
+    local -i resume=0
+
+    if [[ ${+NUMERIC} -eq 0 &&
+        ( $LASTWIDGET = $__searching || $RBUFFER != *$'\n'* ) ]]
+    then
+      [[ $LASTWIDGET = $__searching ]] && { CURSOR=$__savecursor; resume=1 }
+      __searching=$WIDGET
+      __savecursor=$CURSOR
+      if _punto_hist_step -1 $resume; then
+        [[ $RBUFFER = *$'\n'* ]] ||
+            zstyle -T ':zle:down-line-or-beginning-search' leave-cursor &&
+            zle .end-of-line
+        return
+      fi
+      [[ $RBUFFER = *$'\n'* ]] || return
+    fi
+    __searching=''
+    zle .down-line-or-history
+  }
+  zle -N down-line-or-beginning-search
 fi
 
 if [[ -n $BREW_PREFIX ]]; then
