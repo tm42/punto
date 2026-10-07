@@ -233,20 +233,35 @@ if (( $+functions[_histdb_query] )); then
     prefix=${prefix//'%'/\\%}
     prefix=${prefix//_/\\_}
     local query="
-        select commands.argv from history
+        select commands.argv || char(30) from history
         left join commands on history.command_id = commands.rowid
         left join places on history.place_id = places.rowid
         where commands.argv LIKE '${prefix}%' ESCAPE '\'
           and places.dir = '$(sql_escape $PWD)'
-          and instr(commands.argv, char(10)) = 0
+          and instr(commands.argv, char(30)) = 0
         group by commands.argv
         order by max(history.start_time) desc
     "
+    # Rows are terminated with 0x1e, not left on their own line, because a
+    # command can contain a newline and sqlite3 separates rows with one — so a
+    # multi-line command used to arrive as fragments, and the first fragment
+    # matches the typed prefix, which would put half a command on the line for
+    # Enter to run. 0x1e is excluded from the data above so the split cannot be
+    # confused by it; nobody types one on purpose, where multi-line commands are
+    # ordinary.
+    #
+    # `.mode list --escape off` is not optional. sqlite3's CLI renders control
+    # characters in caret notation, so without it char(30) leaves as the two
+    # bytes `^^` and no separator reaches the output at all: measured 2026-10-07,
+    # `select 'A'||char(30)||'B'` gives 41 5e 5e 42 0a on /usr/bin/sqlite3 3.51.0
+    # and Homebrew's 3.53.4, and 41 1e 42 0a with the mode set. Newline and tab
+    # pass through raw either way, which is why the fault this fixes is real.
+    #
     # Same two guards as the suggestion strategy below: _histdb_query echoes
     # "error in <the whole query>" on a non-zero sqlite3 exit
     # (sqlite-history.zsh:31) rather than returning a status, and sqlite3's own
     # stderr reaches the terminal regardless of that return value.
-    local out=$(_histdb_query "$query" 2>/dev/null)
+    local out=$(_histdb_query ".mode list --escape off" "$query" 2>/dev/null)
     [[ $out == error\ in* ]] && return 1
     print -r -- $out
   }
@@ -264,7 +279,16 @@ if (( $+functions[_histdb_query] )); then
     # local history here: tier one comes back empty and the walk degrades to
     # tier two alone, which is what ↑ did before this block existed.
     local out=$(_punto_histdb_local "$prefix")
-    [[ -n $out ]] && local_hits=( ${(f)out} )
+    # Split on 0x1e, not on newlines, and strip the LEADING newline from each
+    # element. sqlite3 writes the row's newline after the value, so after the
+    # separator: the bytes for three rows are `one line 1e 0a multi 0a line two
+    # 1e 0a three 0a four 0a five 1e 0a`, and every element but the first would
+    # otherwise begin with a newline. That would survive into the ${a:|b}
+    # subtraction below, which compares exact strings, so every local command
+    # but the newest would appear twice in the walk. No empty-element handling
+    # is needed: unquoted (s) splitting drops empty fields, so a prefix matching
+    # nothing gives an array of length 0.
+    [[ -n $out ]] && local_hits=( ${${(ps:\x1e:)out}##$'\n'} )
     # No (Oa): $history already expands newest-first, and reversing it would
     # make ↑ walk forward in time.
     #
