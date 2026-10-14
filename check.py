@@ -69,6 +69,37 @@ CLONES = {
 }
 TPM_PLUGINS = ["tmux-sensible", "tmux-yank", "tmux-thumbs", "extrakto"]
 
+# Paths in $HOME, relative to it, that punto is able to wrap rather than
+# symlink — for a machine where something else rewrites them. ~/.zshrc is the
+# one member: the work machine runs a security agent that watches it, adds its own
+# lines, and adds them again when they are moved into ~/.zshrc.local, which
+# cannot help because that file is sourced by the file being watched. Wrapped,
+# the agent writes to a real file in $HOME and dotfiles/zsh/.zshrc is never the
+# file it edits.
+#
+# Two separate questions, and they belong in two separate places. *What can be
+# wrapped* is a property of the tracked file: punto's block is zsh, so the file
+# has to be one a shell sources, and it has to resolve nothing against its own
+# path, because after wrapping it is sourced rather than being the file zsh
+# read. That is reviewed code and lives here. *Whether to wrap* is a property of
+# one machine — only the machine running something that rewrites the file needs
+# it — and lives in ~/.config/punto/wrap, which is untracked and per machine.
+#
+# Without the split, an entry naming .config/nvim/init.lua would be valid, link
+# would replace the symlink with a six-line zsh block, nvim would not start, and
+# check_links would print `nvim: 1 wrapped, 16 linked` and exit 0 — the checker
+# calling a dead configuration healthy. 22 of the 32 managed paths are files no
+# shell reads. Being a shell file is not enough either: cheat.sh derives its own
+# directory from $0, which a wrapper would change.
+WRAPPABLE = {".zshrc"}
+
+WRAP_FILE = HOME / ".config" / "punto" / "wrap"
+
+# The verdicts that mean nothing to do. Two tests share them — check_links'
+# healthy line and link.py's plan() — and a verdict missing from either is a
+# correct path reported as broken or rewritten on every run.
+HEALTHY = ("linked", "wrapped")
+
 STATUSLINE_CMD = "~/.claude/statusline-agnoster.sh"
 NOTIFY_NAME = "agent-notify.sh"
 # UserPromptSubmit is not for notifying — it is the only way to know Claude
@@ -175,17 +206,181 @@ def stale_links() -> list:
     return stale
 
 
+# ── A wrapped path, which punto co-owns with whatever else writes it ────────
+
+WRAP_OPEN = b"# >>> punto >>>"
+WRAP_CLOSE = b"# <<< punto <<<"
+
+
+def wrapper_block(src: Path) -> bytes:
+    """The exact bytes of punto's block in a wrapped file, for the package file
+    `src` the block has to source.
+
+    The one piece of generated text in this repository, and it is generated
+    because the checkout's absolute path is machine-specific. link.py writes
+    what this returns and never a second copy of the text, and check_links
+    compares against what this returns, so the program that writes a block and
+    the program that validates one cannot disagree about it.
+
+    Hardcoding the path rather than sourcing a punto-owned symlink keeps the
+    only symlink in a directory no package owns out of the picture —
+    stale_links bounds its scan to directories a package owns, so a dangling one
+    at ~/.config/punto/ would be reported by nothing."""
+    return b"\n".join([
+        WRAP_OPEN,
+        b"# punto owns these six lines and nothing else in this file.",
+        b"# The configuration is the file sourced below - edit it there.",
+        b"# Machine-local lines go in ~/.zshrc.local, which that file sources.",
+        b'source "' + os.fsencode(src) + b'"',
+        WRAP_CLOSE,
+    ]) + b"\n"
+
+
+def wrapped_paths() -> tuple:
+    """(paths, error): which paths this machine wraps instead of linking, read
+    from ~/.config/punto/wrap, and why the file could not be read.
+
+    One $HOME-relative path per line. Blank lines and lines whose first non-space
+    character is # are skipped, so the file can carry the sentence that explains
+    it to whoever opens it next. Absent is not an error and means wrap nothing —
+    that is the default and the state a machine is in until someone writes the
+    file.
+
+    Returns the failure rather than raising it. main() calls each section bare,
+    so an exception here would end `./check.py links repo` in a traceback and
+    take the `repo` section down along with `links`.
+
+    A file that is present and unreadable is a failure and not an empty set.
+    Falling back to wrapping nothing would silently un-wrap the machine, and
+    un-wrapping is not inert: the next `punto link` would find a real file whose
+    content differs, back the wrapper up and restore the symlink, handing the
+    other program the repository copy again. That is the failure the wrapper
+    exists to prevent, reached because one read of a twenty-byte file failed."""
+    try:
+        text = WRAP_FILE.read_text()
+    except FileNotFoundError:
+        return set(), None
+    except OSError as e:
+        return set(), f"{tilde(WRAP_FILE)}: {e}"
+    paths = set()
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        paths.add(line.strip())
+    return paths, None
+
+
+def _strip_cr(line: bytes) -> bytes:
+    """One trailing \\r, removed. Not rstrip: a line ending \\r\\r was not
+    produced by converting line endings and is not a marker."""
+    return line[:-1] if line.endswith(b"\r") else line
+
+
+def wrapper_span(lines: list) -> tuple:
+    """Where punto's block is in `lines`: ("found", open, close), ("absent",
+    -1, -1) when the file holds no marker at all, or ("unusable", -1, -1) when
+    the markers are not exactly one well-formed pair — unterminated,
+    duplicated, or closed before it opens.
+
+    One trailing \\r is stripped here and nowhere else. A wrapper whose endings
+    have been converted to CRLF sources nothing: \\r is not whitespace to zsh's
+    lexer, so it becomes the last character of the path and the file is not
+    found — measured on zsh 5.9, exit 127. Such a file therefore has to be
+    recognised as a wrapper so that it can be repaired. Stripping on the block
+    comparison as well would make it compare clean and leave nothing that could
+    ever reach the repair."""
+    opens = [i for i, ln in enumerate(lines) if _strip_cr(ln) == WRAP_OPEN]
+    closes = [i for i, ln in enumerate(lines) if _strip_cr(ln) == WRAP_CLOSE]
+    if not opens and not closes:
+        return "absent", -1, -1
+    if len(opens) != 1 or len(closes) != 1 or opens[0] > closes[0]:
+        return "unusable", -1, -1
+    return "found", opens[0], closes[0]
+
+
+def wrap_state(src: Path, dst: Path) -> tuple:
+    """What the wrapped path `dst` is relative to the package file `src`, and
+    how many of its lines lie outside punto's block.
+
+    Six verdicts, and link.py has one policy per verdict: `wrapped`, `wrapper
+    needs repair`, `wrapper markers unusable`, `missing`, `symlink where a
+    wrapper belongs`, and `real file, not wrapped`. check_links has one more that
+    is not here, because it belongs to a path this machine has *not* listed:
+    `wrapper nothing declares`.
+
+    Bytes throughout, and nothing here decodes a line punto did not write.
+    `read_text` would be worse than untidy: a UnicodeDecodeError is a
+    ValueError, so the read's `except OSError` would not catch it, nothing else
+    would either — main() calls each section bare — and one non-UTF-8 byte that
+    another program put in ~/.zshrc would end `./check.py links repo` in a
+    traceback, taking the `repo` section down along with `links`.
+
+    The count is the number of lines of the file punto does not own, and it is
+    the only place that fact is visible at all. It is a reading rather than an
+    alarm: nothing stores what it was last time, so on a machine where another
+    program's lines arrive on the first day it is non-zero for ever. It is 0 for
+    every verdict but `wrapped`, where the rest of the file has not been
+    established to be intact."""
+    if dst.is_symlink():
+        return "symlink where a wrapper belongs", 0
+    if not dst.exists():
+        return "missing", 0
+    try:
+        data = dst.read_bytes()
+    except OSError:
+        # Unreadable is treated as foreign, the way an unreadable real file at a
+        # linked path is treated as differing. link.py's backup of it then fails
+        # for the same reason and says so.
+        return "real file, not wrapped", 0
+    lines = data.split(b"\n")
+    where, open_i, close_i = wrapper_span(lines)
+    if where == "absent":
+        return "real file, not wrapped", 0
+    if where == "unusable":
+        return "wrapper markers unusable", 0
+    # Exactly, with no \r stripped: see wrapper_span. The builder ends in a
+    # newline, so the last element of its split is the empty string after it.
+    if lines[open_i:close_i + 1] != wrapper_block(src).split(b"\n")[:-1]:
+        return "wrapper needs repair", 0
+    total = len(lines) - 1 if data.endswith(b"\n") else len(lines)
+    return "wrapped", total - (close_i + 1 - open_i)
+
+
 # ── Sections ─────────────────────────────────────────────────
 
 
 def check_links():
     say("links")
+    wrapped, wrap_error = wrapped_paths()
+    if wrap_error:
+        # Reported and the section stopped, rather than states this cannot know:
+        # if the wrapped set is unknown then every path's verdict is unreliable,
+        # not only the wrapped ones. See wrapped_paths.
+        bad(f"cannot read the wrap list — {wrap_error}")
+        return
+    # An entry that names nothing wrappable wraps nothing, and nothing else here
+    # would ever say so: the walk below iterates the packages, so a path no
+    # package owns is simply never visited. A one-line file is where a typo is
+    # least likely to be noticed, and the machine a typo leaves linked is the one
+    # whose reason for wrapping has not gone away. The same test covers an
+    # absolute path, a path with .. in it, a path deleted from a package since
+    # the line was written, and a package-owned path a zsh block would break.
+    for entry in sorted(wrapped - WRAPPABLE):
+        bad(f"{tilde(WRAP_FILE)} lists {entry}, which punto cannot wrap; "
+            f"wrappable: {', '.join(sorted(WRAPPABLE))}")
     for pkg in packages():
         counts = {}
         examples = {}
+        notes = []
         for rel in managed(pkg):
             src, dst = PKGROOT / pkg / rel, HOME / rel
-            if dst.is_symlink():
+            if str(rel) in wrapped and str(rel) in WRAPPABLE:
+                st, outside = wrap_state(src, dst)
+                if outside:
+                    notes.append(f"{rel}  — {outside} "
+                                 f"line{'' if outside == 1 else 's'} outside "
+                                 "punto's block, which punto does not own")
+            elif dst.is_symlink():
                 try:
                     resolved = dst.resolve()
                 except OSError:
@@ -204,22 +399,51 @@ def check_links():
                 # never installed, or a program replaced the link by writing a
                 # new file over it — which silently detaches it from the repo.
                 same = False
+                data = None
                 try:
-                    same = src.read_bytes() == dst.read_bytes()
+                    data = dst.read_bytes()
+                    same = src.read_bytes() == data
                 except OSError:
                     pass
-                st = "real file, same content" if same else "real file, DIFFERENT content"
+                if (not same and data is not None
+                        and wrapper_span(data.split(b"\n"))[0] != "absent"):
+                    # A wrapper this machine no longer declares. The action is
+                    # the same either way — link backs it up and restores the
+                    # symlink, which is what un-wrapping is — but the cause is
+                    # not. ~/.config/punto/wrap is untracked, in no template and
+                    # one line long, so a $HOME restore or a rebuilt machine can
+                    # lose it with the wrapper still in place; reported as a
+                    # differing real file, the remedy INSTALL.md gives is the
+                    # conversion, which hands the other program the repository
+                    # copy again. The markers are already located in this pass.
+                    st = "wrapper nothing declares"
+                else:
+                    st = ("real file, same content" if same
+                          else "real file, DIFFERENT content")
             counts[st] = counts.get(st, 0) + 1
             examples.setdefault(st, str(rel))
 
-        if set(counts) == {"linked"}:
-            ok(f"{pkg}: {counts['linked']} linked")
+        detail = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
+        # HEALTHY and not {"linked"}: a correctly wrapped path is as healthy as
+        # a correct symlink, and a package of nothing but wrapped files reports
+        # `zsh: 1 wrapped`. `counts and` keeps a package holding no managed file
+        # at all a fault rather than turning it into a pass.
+        if counts and set(counts) <= set(HEALTHY):
+            ok(f"{pkg}: {detail}")
         else:
-            detail = ", ".join(f"{v} {k}" for k, v in sorted(counts.items()))
             bad(f"{pkg}: {detail}")
             for st, first in sorted(examples.items()):
-                if st != "linked":
+                if st not in HEALTHY:
                     print(f"      e.g. {first}  — {st}")
+        # How much of a wrapped file punto does not own. The only place that is
+        # visible at all, and a reading rather than an alarm: nothing stores
+        # what it was last time, so where another program writes to the wrapper
+        # it is non-zero for ever and sits on the passing line. What it replaces
+        # is worse — that agent appending through a symlink put its lines in the
+        # repository copy while the checker reported the package as healthy and
+        # showed nothing at all.
+        for note in notes:
+            print(f"      {note}")
 
     # The other direction, which nothing here looked at before: a link into this
     # repo at a path the repo no longer has. The loop above walks the files that

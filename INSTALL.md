@@ -97,12 +97,18 @@ cd ~/punto
 
 Read the output before continuing.
 
-One line per file that is not already linked, each ending in the reason. A file that is
-already linked prints nothing, so on a second run an empty list is the whole report.
+One line per file that is not already in place, each ending in the reason. A file that is
+already correct prints nothing, so on a second run an empty list is the whole report. The
+verb is `would link` for every file that becomes a symlink, and `would wrap` for a path this
+machine has listed in `~/.config/punto/wrap` — a real file holding a block of punto's own
+instead of a symlink. On a machine that has not written that file, which is the default and
+probably this one, no line says `wrap` and the five wrapped verdicts below cannot appear.
 
 - `missing` — nothing there, the link is free.
 - `same content` — a real file byte-for-byte identical to the repo copy. Replaced by the
-  link and not saved anywhere, because there is nothing in it to lose.
+  link and not saved anywhere, because there is nothing in it to lose. A path this machine
+  has listed as wrapped never reports this: a real file there is `real file, not wrapped`
+  whether it matches or not, and it is saved first either way.
 - `different content` — a real file that differs. Step 5 moves it to
   `~/punto-backup/<timestamp>/` before linking, so your aliases survive; this is your chance
   to see which files that will be.
@@ -117,6 +123,32 @@ already linked prints nothing, so on a second run an empty list is the whole rep
   both the file and the parent; move or remove the parent symlink and re-run it to pick the
   file up.
 
+The five below belong to a path this machine has listed in `~/.config/punto/wrap`:
+
+- `symlink where a wrapper belongs` — the path is still a symlink, which is what a machine
+  prints on the first run after it lists the path. Replaced by the wrapper, and the line
+  names the target it pointed at.
+- `real file, not wrapped` — a real file with no punto block in it, which is what a machine
+  that has never run these steps has. Moved to `~/punto-backup/<timestamp>/` first — whether
+  or not it matches the repo copy, because there is no "identical" case for a file punto did
+  not write — and then the wrapper is written.
+- `wrapper needs repair` — a punto block that is not the block punto would write now. Either
+  the checkout moved, or the block's wording changed in the repo, or something converted the
+  file to CRLF line endings, which stops the `source` line working at all and leaves the
+  shell with none of its configuration. Step 5 splices the current block in and every line
+  outside it survives byte for byte.
+- `wrapper markers unusable` — the `# >>> punto >>>` and `# <<< punto <<<` markers are not
+  exactly one well-formed pair: unterminated, duplicated, or closed before they open.
+  Refused and left alone, because splicing against a missing or second marker is the one
+  thing here that could swallow lines nobody has another copy of. Move the file to
+  `~/punto-backup/<timestamp>/` by hand and run the step again.
+- `wrapper nothing declares` — a real file holding punto's block at a path this machine has
+  *not* listed. Either the line was removed on purpose, which is how a path is un-wrapped, or
+  `~/.config/punto/wrap` went missing — it is untracked and one line long, so a restored or
+  rebuilt `$HOME` can lose it. Step 5 treats it as any other real file that differs: moved to
+  `~/punto-backup/<timestamp>/` and replaced by the symlink. If that is not what you meant,
+  write the path back into the wrap file before running step 5.
+
 Everything above is the same walk step 5 carries out — `--dry-run` is that step with the
 writes switched off, not a second opinion about it.
 
@@ -127,24 +159,43 @@ cd ~/punto
 ./link.py            # --dry-run first, if you want to see the plan
 ```
 
-For every file in every package, make the matching path in `$HOME` a symlink pointing at
-the repo copy. Three things happen before each link, and each one is a way this step used
-to be able to destroy something:
+For every file in every package, make the matching path in `$HOME` point at the repo copy —
+a symlink, unless this machine has listed the path in `~/.config/punto/wrap`, which the fourth
+bullet below explains. Four things happen before each write, and each one is a way this step
+used to be able to destroy something:
 
-- **A real file whose content differs is moved aside first**, so `~/.zshrc` and its aliases
-  end up in `~/punto-backup/<timestamp>/.zshrc` rather than gone. The directory is created
-  only when something is actually saved, and re-running the step makes no empty ones. A
-  file identical to the repo copy is replaced with the link and not saved, because there is
-  nothing in it to lose.
+- **A real file whose content differs is moved aside first**, so `~/.tmux.conf` and whatever
+  you had in it end up in `~/punto-backup/<timestamp>/.tmux.conf` rather than gone. The
+  directory is created only when something is actually saved, and re-running the step makes
+  no empty ones. A file identical to the repo copy is replaced with the link and not saved,
+  because there is nothing in it to lose.
 - **A symlinked parent is refused**, because replacing a link named as the target itself is
   safe and one in a parent is not. Without this test, a `~/.config/nvim` pointing at
   another checkout means the step replaces a file in *that* repo, outside `$HOME`.
 - **An existing symlink is replaced and its old target printed.** Nothing is saved — the
   link is one line of output and that output is all you get, so read it.
+- **A path listed in `~/.config/punto/wrap` is wrapped rather than linked**, because
+  something else on that machine rewrites it and a symlink there means the rewrite lands in
+  this repository. It becomes a real file holding one block between `# >>> punto >>>` and
+  `# <<< punto <<<` whose single statement sources the repo copy from the checkout by absolute
+  path. That block is the only part of the file punto writes or checks; every other line in
+  it belongs to whatever put it there and is kept byte for byte, including lines another
+  program adds, which is the whole reason for wrapping. The configuration is still the repo
+  copy and that is the file to edit. No machine wraps anything until someone writes that
+  file — the subsection below is the whole procedure.
 
-Re-running is safe: an already-correct link is left alone and prints nothing. Only the
-refusals need action, and the file each one names stays unlinked until you clear the parent
-and run the step again.
+Re-running is safe: an already-correct link is left alone and prints nothing, and so is an
+already-correct wrapper — punto does not rewrite a block that is already right, so lines
+something else appended to a wrapped file are never at risk on a re-run. Only the refusals
+need action. A file refused for a symlinked parent stays unlinked until you clear the parent
+and run the step again; a wrapped file refused for unusable markers stays as it is until you
+move it to `~/punto-backup/<timestamp>/` by hand and run the step again, which you may have to
+do without having done anything wrong, because a program that appends to that file can leave a
+second marker behind.
+
+`./link.py` also refuses the whole run, before writing anything, if `~/.config/punto/wrap`
+exists and cannot be read. An unreadable list is not an empty one: treating it as empty would
+un-wrap every path on it in that same run.
 
 `./link.py` also names a symlink in one of these directories that points into the repo at a
 path no package owns any more — what a dotfile deleted from a package leaves behind. It
@@ -157,8 +208,52 @@ started — so `punto` does not resolve until the next one. From then on `punto 
 from any directory, and it is what to run after a pull that adds a file to a package: a
 pull brings the file into the repo and creates no symlink for it.
 
-Editing `~/.zshrc` now edits the repo file. That is the point: `git diff` shows your
+Editing a linked file now edits the repo file. That is the point: `git diff` shows your
 change immediately and there is no copy-back step to forget.
+
+A wrapped path is the exception, and the cost of wrapping it: that path in `$HOME` is the
+six-line wrapper, so the configuration to edit is the repo copy in the checkout —
+`dotfiles/zsh/.zshrc` for `~/.zshrc`. `punto check links` reports it as `wrapped` rather than
+`linked`, and tells you how many lines of the file are outside punto's block — how much of it
+punto does not own. On a machine where another program writes there, that number is non-zero
+for good and is a reading rather than a warning. Machine-local lines still go in
+`~/.zshrc.local`, which the repo copy sources at the end.
+
+### Something else on this machine keeps rewriting a file punto manages
+
+A security agent, an MDM profile, a vendor installer — anything that opens a file in `$HOME`
+and adds its own lines. If that path is a punto symlink, the write follows the link and lands
+in `dotfiles/` inside the checkout, where it is a change to this repository: `git diff` shows
+it, a push publishes it, and `punto check links` says `linked` the whole time, because the
+symlink is intact and nothing looked at what came down it.
+
+Wrapping is the answer, and it is per machine. Only the machine with that program needs it,
+and nothing in the repo turns it on:
+
+```sh
+mkdir -p ~/.config/punto
+printf '# Paths punto makes a real wrapper instead of a symlink,\n# because something else on this machine rewrites them.\n.zshrc\n' > ~/.config/punto/wrap
+punto link --dry-run      # expect: would wrap  .zshrc  (symlink where a wrapper belongs)
+punto link
+```
+
+Then open a new shell and run `punto check links`. The zsh line should read `zsh: 1 wrapped`,
+followed by a count of the lines outside punto's block once the other program has written
+again.
+
+One path per line, `$HOME`-relative, no leading `~/` or `/`. Blank lines and `#` comments are
+ignored. **Only `.zshrc` can be listed today**: punto's block is zsh — two comments and a
+`source` line — so the file has to be one a shell reads, and it has to resolve nothing against
+its own path, because after wrapping it is sourced rather than being the file zsh started
+with. `dotfiles/zsh/.zshrc` qualifies; `init.lua` and a script that derives its own directory
+from `$0` do not. An entry naming anything else is reported by `punto check links` as a path
+punto cannot wrap, and nothing is wrapped.
+
+To un-wrap, delete the line. The next `punto link` moves the wrapper to
+`~/punto-backup/<timestamp>/` — the other program's lines with it — and restores the symlink.
+Losing the file by accident does exactly the same thing, with one difference worth knowing:
+`punto check links` reports that path as `wrapper nothing declares` rather than as a stray real
+file, so the cause is on the screen before you run the step that acts on it.
 
 ## 6. Your machine's own values
 
