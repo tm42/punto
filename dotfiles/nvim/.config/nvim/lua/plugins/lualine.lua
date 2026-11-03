@@ -2,7 +2,13 @@
 -- Lualine: Status Line
 -- ============================================================================
 -- Stock lualine sections. Two deliberate settings and nothing else:
---   theme = "catppuccin"   follows the colorscheme rather than guessing
+--   theme = "catppuccin-nvim"  follows the colorscheme rather than guessing, and
+--                          follows its flavour too, so mocha is set in one place.
+--                          Not "catppuccin": catppuccin ships catppuccin-nvim and
+--                          one file per flavour, lualine ships no catppuccin at all,
+--                          so that name matched nothing and lualine fell back to
+--                          `auto` — visible only as a startup line pointing at
+--                          :LualineNotices.
 --   globalstatus = true    one bar for the whole window, not one per split —
 --                          splits are already busy next to tmux's own bar
 -- ============================================================================
@@ -14,7 +20,7 @@ return {
   config = function()
     require("lualine").setup({
       options = {
-        theme = "catppuccin", -- Match our colorscheme
+        theme = "catppuccin-nvim", -- Match our colorscheme and its flavour
         component_separators = { left = "", right = "" },
         section_separators = { left = "", right = "" },
         globalstatus = true, -- Single statusline for all windows
