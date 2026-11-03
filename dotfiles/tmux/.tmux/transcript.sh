@@ -64,4 +64,12 @@ fi
 # setlocal and not set: `set` on a buffer-local option also moves the global default,
 # so every new buffer in this nvim would be unmodifiable too and any plugin writing a
 # scratch buffer fails. :LualineNotices did, with E21 out of appendbufline.
-nvim -R -c 'setlocal nomodifiable' -c 'normal G' "$out"
+#
+# --cmd 'set nomodeline' and not a -c: a -c command runs after the buffer is read,
+# which is after a modeline in it has already been obeyed. The rendered session is
+# not trusted text — its last lines are whatever the agent last printed, which can
+# be a tool result holding a file someone else wrote, and a `vim: set ...` line in
+# the first or last five is read as configuration. Measured: a session whose last
+# line is `/* vim: set shiftwidth=3 : */` opens with shiftwidth 3, and 4 with this
+# flag. A transcript has no legitimate modeline, so nothing is lost by refusing it.
+nvim -R --cmd 'set nomodeline' -c 'setlocal nomodifiable' -c 'normal G' "$out"
